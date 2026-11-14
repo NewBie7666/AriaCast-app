@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
             val s = (binder as AudioCastService.AudioCastBinder).getService()
             _service.value = s
             isBound = true
-            pluginManager.runEnabledPlugins(this@MainActivity, s)
+            // Lite: do not execute third-party plugins.
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -155,10 +155,10 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
     }
 
     override fun castTo(servers: List<Server>, source: SourceKind, inputDeviceId: Int?) {
-        if (servers.isEmpty()) return
+        if (source != SourceKind.SYSTEM_CAPTURE || servers.size != 1 || servers[0].platform != "AirPlay2") return
         pendingServers = servers
         // With an AriaCompanion board in speaker-capable state, screen capture is never needed.
-        val effective = if (source == SourceKind.SYSTEM_CAPTURE && CompanionHub.get(this).isUsbAttached) SourceKind.COMPANION_USB else source
+        val effective = SourceKind.SYSTEM_CAPTURE // Never switch silently to USB / microphone
         val missing = neededPermissions(effective)
         if (missing.isNotEmpty()) {
             pendingSource = if (effective == SourceKind.SYSTEM_CAPTURE) null else effective to inputDeviceId
@@ -190,8 +190,8 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         prefs = getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE)
         mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         discoveryManager = DiscoveryManager(this)
-        pluginManager = PluginManager(this)
-        updateManager = UpdateManager(this)
+        // Lite: no plugin manager or JS execution.
+        // Lite: no automatic outbound update checks.
         loadGroups()
 
         // First run: onboarding. A TV opens on the full-screen receiver, a phone that is
@@ -205,10 +205,10 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         screenFromIntent(intent)?.let { _screen.value = it }
 
         setContent {
-            AriaTheme { AriaApp(this) }
+            AriaTheme { com.aria.ariacast.ui.LxAirPlayLiteApp(this) }
         }
 
-        lifecycleScope.launch { updateManager.checkForUpdates(manual = false) }
+        // Lite: no auto-update network request.
         handleDeepLink(intent)
     }
 
@@ -239,7 +239,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         _notificationAccess.value = MediaNotificationListener.isEnabled(this)
         _multiroom.value = prefs.getBoolean(SettingsActivity.KEY_MULTIROOM_ENABLED, false)
         loadGroups()
-        pluginManager.runEnabledPlugins(this, _service.value)
+        // Lite: plugins are never executed.
     }
 
     override fun onStop() {
@@ -254,7 +254,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
 
     override fun onDestroy() {
         super.onDestroy()
-        pluginManager.shutdown()
+        // Lite: no plugin manager was started.
     }
 
     // ---------------------------------------------------------------- AppController
