@@ -257,86 +257,42 @@ class DiscoveryManager(private val context: Context) {
         return ExtraFields.join(merged.toList())
     }
 
+    /**
+     * Lite build: always discover AirPlay 2 receivers on launch.
+     *
+     * The full AriaCast app gates this on an "airplay2_enabled" preference that
+     * defaults to false. This fork has a new package ID and no protocol
+     * settings UI, so relying on that preference hides every receiver.
+     */
     fun startDiscovery() {
         stopDiscovery()
         synchronized(discoveredServers) {
             discoveredServers.clear()
             _servers.value = emptyList()
         }
-        
+
         try {
             if (multicastLock == null) {
-                multicastLock = wifiManager.createMulticastLock("AriaCastDiscoveryLock")
+                multicastLock = wifiManager.createMulticastLock("LxAirPlayLiteDiscovery")
             }
             multicastLock?.acquire()
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire Wi-Fi multicast lock: ${e.message}")
+        }
 
         _state.value = DiscoveryState.SCANNING
-        
-        val prefs = context.getSharedPreferences("AriaCastPrefs", Context.MODE_PRIVATE)
-        val services = mutableListOf("_audiocast._tcp")
-        val airplayEnabled = prefs.getBoolean("airplay_enabled", false)
-        val airplay2Enabled = prefs.getBoolean("airplay2_enabled", false)
-        if (airplay2Enabled) {
-            services.add("_airplay._tcp")
-        }
-        if (airplayEnabled) {
-            raopDiscovery = RaopDiscovery(context)
-            raopDiscovery?.start(onDeviceFound = { device ->
-                // Hand the receiver's whole TXT record to the AirPlay 1 client: it picks
-                // encryption (et), codec (cn), metadata types (md) and auth (pw/sf) from it.
-                val fields = device.txt.filterKeys { it in RAOP_TXT_KEYS }.toMutableMap()
-                device.mac?.let { fields["id"] = it }
-                val server = Server(
-                    name = device.name,
-                    host = device.host,
-                    port = device.port,
-                    version = device.txt["vs"] ?: device.model ?: "1.0",
-                    codecs = listOf(if (AirPlayTxt.intList(device.txt["cn"]).let { it.isEmpty() || 1 in it }) "ALAC" else "PCM"),
-                    sampleRate = device.sampleRate,
-                    channels = device.txt["ch"]?.toIntOrNull() ?: 2,
-                    platform = "AirPlay",
-                    extra = ExtraFields.join(fields.toList() + listOfNotNull(device.model?.let { "model" to it }))
-                )
-                synchronized(discoveredServers) {
-                    discoveredServers["${device.name}::AirPlay"] = server
-                    _servers.value = discoveredServers.values.toList()
-                    _state.value = DiscoveryState.FOUND
-                }
-            }, onDeviceLost = { name ->
-                synchronized(discoveredServers) {
-                    if (discoveredServers.remove("$name::AirPlay") != null) {
-                        _servers.value = discoveredServers.values.toList()
-                    }
-                }
-            })
-        }
-        if (prefs.getBoolean("google_cast_enabled", false)) {
-            services.add("_googlecast._tcp")
-        }
-        if (prefs.getBoolean("snapcast_enabled", false)) {
-            services.add("_snapcast-ctrl._tcp")
-            services.add("_snapcast-jsonrpc._tcp")
-        }
-
         discoveryJob = scope.launch {
-            // Initial burst
-            launch {
-                services.forEach { type ->
-                    try {
-                        val listener = createNsdListener()
-                        synchronized(activeListeners) { activeListeners.add(listener) }
-                        nsdManager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
-                    } catch (e: Exception) { Log.e(TAG, "Discovery failed for $type: ${e.message}") }
-                }
+            // Always query the native AirPlay 2 Bonjour service.
+            try {
+                val listener = createNsdListener()
+                synchronized(activeListeners) { activeListeners.add(listener) }
+                nsdManager.discoverServices("_airplay._tcp", NsdManager.PROTOCOL_DNS_SD, listener)
+            } catch (e: Exception) {
+                Log.e(TAG, "AirPlay 2 discovery failed: ${e.message}")
+                _state.value = DiscoveryState.NONE
+                return@launch
             }
 
-            launch { startUdpDiscoveryLoop() }
-            if (prefs.getBoolean("dlna_enabled", false)) {
-                launch { startSsdpDiscoveryLoop() }
-            }
-
-            // Keep "SCANNING" state for at least 15 seconds
             delay(15000)
             if (_state.value == DiscoveryState.SCANNING) {
                 _state.value = if (discoveredServers.isEmpty()) DiscoveryState.NONE else DiscoveryState.FOUND
