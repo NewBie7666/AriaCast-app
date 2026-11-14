@@ -46,11 +46,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.aria.ariacast"
+        applicationId = "com.newbie7666.lxairplaylite"
         minSdk = 29
         targetSdk = 36
-        versionCode = 18
-        versionName = "2.0.0"
+        versionCode = 1
+        versionName = "0.1.0-lx"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -83,7 +83,7 @@ android {
         create("github") {
             dimension = "distribution"
             isDefault = true
-            resValue("bool", "self_update", "true")
+            resValue("bool", "self_update", "false")
         }
         create("fdroid") {
             dimension = "distribution"
