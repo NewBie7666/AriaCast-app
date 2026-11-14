@@ -49,8 +49,8 @@ android {
         applicationId = "com.newbie7666.lxairplaylite"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-lx"
+        versionCode = 2
+        versionName = "0.1.1-lx"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
