@@ -1,0 +1,39 @@
+name: Build LX AirPlay Lite APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test Lite branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout privacy-scoped Lite source
+        uses: actions/checkout@v4
+        with:
+          ref: feature/lx-airplay2-lite
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
+      - name: Run tests and build Debug APK
+        run: ./gradlew --no-daemon testGithubDebugUnitTest assembleGithubDebug
+
+      - name: Publish installable Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lx-airplay-lite-debug-apk
+          path: app/build/outputs/apk/github/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
