@@ -11,6 +11,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -92,7 +93,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
             val s = (binder as AudioCastService.AudioCastBinder).getService()
             _service.value = s
             isBound = true
-            pluginManager.runEnabledPlugins(this@MainActivity, s)
+            // Lite: do not execute third-party plugins.
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -123,7 +124,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         pendingSource = null
         when {
             recordAudio && source != null -> startSourceCast(source.first, source.second)
-            recordAudio -> startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+            recordAudio -> launchProjectionConsent()
             !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> openAppSettingsForPermission()
             else -> Toast.makeText(this, getString(R.string.record_audio_permission_required), Toast.LENGTH_LONG).show()
         }
@@ -136,6 +137,23 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         wifiAddNetworkContinuation = null
     }
 
+    /**
+     * Android 14+ optional fast path: skips the per-app picker, NOT OS consent.
+     * This requests full-display projection scope. The Lite service does not
+     * create a virtual display, and its AudioPlaybackCapture stays locked
+     * to the installed LX Music UID. Users must explicitly opt in from the UI.
+     */
+    private fun launchProjectionConsent() {
+        val useDefaultDisplay = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            prefs.getBoolean(KEY_LITE_FAST_PROJECTION, false)
+        val request = if (useDefaultDisplay) {
+            mediaProjectionManager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            mediaProjectionManager.createScreenCaptureIntent()
+        }
+        startMediaProjection.launch(request)
+    }
+
     private fun hasPermission(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
     private fun openAppSettingsForPermission() {
@@ -146,7 +164,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
     private fun neededPermissions(source: SourceKind): List<String> = buildList {
         // Playback capture and the microphone both need RECORD_AUDIO; USB loopback and
         // forwarding received audio don't.
-        if ((source == SourceKind.SYSTEM_CAPTURE || source == SourceKind.MICROPHONE) && !hasPermission(Manifest.permission.RECORD_AUDIO)) {
+        if ((source == SourceKind.SYSTEM_CAPTURE) && !hasPermission(Manifest.permission.RECORD_AUDIO)) {
             add(Manifest.permission.RECORD_AUDIO)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
@@ -155,17 +173,17 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
     }
 
     override fun castTo(servers: List<Server>, source: SourceKind, inputDeviceId: Int?) {
-        if (servers.isEmpty()) return
+        if (source != SourceKind.SYSTEM_CAPTURE || servers.size != 1 || servers[0].platform != "AirPlay2") return
         pendingServers = servers
         // With an AriaCompanion board in speaker-capable state, screen capture is never needed.
-        val effective = if (source == SourceKind.SYSTEM_CAPTURE && CompanionHub.get(this).isUsbAttached) SourceKind.COMPANION_USB else source
+        val effective = SourceKind.SYSTEM_CAPTURE // Never switch silently to USB / microphone
         val missing = neededPermissions(effective)
         if (missing.isNotEmpty()) {
             pendingSource = if (effective == SourceKind.SYSTEM_CAPTURE) null else effective to inputDeviceId
             requestCastPermissions.launch(missing.toTypedArray())
             return
         }
-        if (effective == SourceKind.SYSTEM_CAPTURE) startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+        if (effective == SourceKind.SYSTEM_CAPTURE) launchProjectionConsent()
         else startSourceCast(effective, inputDeviceId)
     }
 
@@ -190,8 +208,8 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         prefs = getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE)
         mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         discoveryManager = DiscoveryManager(this)
-        pluginManager = PluginManager(this)
-        updateManager = UpdateManager(this)
+        // Lite: no plugin manager or JS execution.
+        // Lite: no automatic outbound update checks.
         loadGroups()
 
         // First run: onboarding. A TV opens on the full-screen receiver, a phone that is
@@ -205,10 +223,10 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         screenFromIntent(intent)?.let { _screen.value = it }
 
         setContent {
-            AriaTheme { AriaApp(this) }
+            AriaTheme { com.aria.ariacast.ui.LxAirPlayLiteApp(this) }
         }
 
-        lifecycleScope.launch { updateManager.checkForUpdates(manual = false) }
+        // Lite: no auto-update network request.
         handleDeepLink(intent)
     }
 
@@ -239,7 +257,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         _notificationAccess.value = MediaNotificationListener.isEnabled(this)
         _multiroom.value = prefs.getBoolean(SettingsActivity.KEY_MULTIROOM_ENABLED, false)
         loadGroups()
-        pluginManager.runEnabledPlugins(this, _service.value)
+        // Lite: plugins are never executed.
     }
 
     override fun onStop() {
@@ -254,7 +272,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
 
     override fun onDestroy() {
         super.onDestroy()
-        pluginManager.shutdown()
+        // Lite: no plugin manager was started.
     }
 
     // ---------------------------------------------------------------- AppController
@@ -391,6 +409,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
 
     companion object {
         const val KEY_ONBOARDED = "onboarding_done_v2"
+        const val KEY_LITE_FAST_PROJECTION = "lite_skip_application_picker"
         const val EXTRA_SCREEN = "com.aria.ariacast.EXTRA_SCREEN"
         const val KEY_GROUPS = "saved_groups"
 

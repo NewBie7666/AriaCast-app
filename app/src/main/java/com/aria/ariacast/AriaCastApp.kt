@@ -11,6 +11,6 @@ class AriaCastApp : Application() {
         ThemeUtils.applyTheme(themeMode)
         // The few View-based dialogs (update prompt) follow Material You like the Compose UI.
         com.google.android.material.color.DynamicColors.applyToActivitiesIfAvailable(this)
-        if (com.aria.ariacast.webremote.WebRemote.isEnabled(this)) com.aria.ariacast.webremote.WebRemote.start(this)
+        // Lite build: never start an HTTP remote-control service.
     }
 }

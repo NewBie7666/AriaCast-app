@@ -80,7 +80,6 @@ import com.aria.ariacast.raop.RaopClient
 import com.aria.ariacast.companion.CompanionHub
 import com.aria.ariacast.pipeline.AudioSource
 import com.aria.ariacast.pipeline.FgsTypes
-import com.aria.ariacast.pipeline.MicrophoneSource
 import com.aria.ariacast.pipeline.ProjectionCaptureSource
 import com.aria.ariacast.pipeline.SourceKind
 import com.aria.ariacast.receiver.ReceiverHub
@@ -124,8 +123,6 @@ class AudioCastService : Service() {
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
     private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var videoCodec: MediaCodec? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var mediaSession: MediaSession? = null
     
@@ -321,7 +318,7 @@ class AudioCastService : Service() {
         }
         
         startMetadataWorker()
-        startArtworkServer()
+        // Lite: no background HTTP artwork service.
     }
 
     private fun startMetadataWorker() {
@@ -414,27 +411,14 @@ class AudioCastService : Service() {
                 }
 
                 val destinations = parseDestinations(intent)
-                if (mediaProjectionToken != null && destinations.isNotEmpty()) {
+                if (mediaProjectionToken != null && destinations.size == 1 && destinations[0].platform == "AirPlay2") {
                     startCasting(projectionSourceFactory(mediaProjectionToken), FgsTypes.MEDIA_PROJECTION, destinations)
                 }
                 return START_STICKY
             }
             ACTION_START_SOURCE -> {
-                // Sources that need no screen-capture consent: microphone / line-in,
-                // the AriaCompanion USB loopback, and audio this device is receiving.
-                cleanupSession()
-                val kind = SourceKind.fromId(intent.getStringExtra(EXTRA_SOURCE))
-                val factory = kind?.let { sourceFactoryFor(it, intent) }
-                val destinations = parseDestinations(intent)
-                if (factory != null && destinations.isNotEmpty()) {
-                    val fgsType = when (kind) {
-                        SourceKind.MICROPHONE -> FgsTypes.MICROPHONE
-                        SourceKind.COMPANION_USB -> FgsTypes.CONNECTED_DEVICE
-                        else -> FgsTypes.MEDIA_PLAYBACK
-                    }
-                    startCasting(factory, fgsType, destinations)
-                }
-                return START_STICKY
+                // Lite: non-playback sources (microphone, USB and relay) are disabled.
+                return START_NOT_STICKY
             }
             ACTION_STOP -> {
                 stopCasting()
@@ -471,7 +455,7 @@ class AudioCastService : Service() {
                 destinations.add(CastDestination(name, host, 0, platform, extra = extra))
             }
         }
-        return destinations
+        return destinations.filter { it.platform == "AirPlay2" }.take(1)
     }
 
     /** Builds the [AudioSource] for a start request; runs after the service is in the foreground. */
@@ -480,26 +464,26 @@ class AudioCastService : Service() {
     }
 
     private fun projectionSourceFactory(mediaProjectionToken: Intent) = SourceFactory {
-        // MediaProjection token is single-use on Android 14+; obtain it exactly once.
-        val projection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, mediaProjectionToken)
-        if (projection == null) {
-            PacketLogger.log(PacketDirection.IN, PacketType.HANDSHAKE, "MediaProjection permission was not granted")
+        // Fail closed: never capture arbitrary apps when LX Music is not installed.
+        val lxUid = runCatching {
+            @Suppress("DEPRECATION")
+            packageManager.getApplicationInfo("cn.toside.music.mobile", 0).uid
+        }.getOrNull()
+        if (lxUid == null) {
+            _lastError.value = "LX Music (cn.toside.music.mobile) is not installed or visible"
             null
         } else {
-            mediaProjection = projection
-            projection.registerCallback(mediaProjectionCallback, null)
-            ProjectionCaptureSource(projection, sharedPreferences.getBoolean(KEY_CAPTURE_GAMES, true))
+            // Android 14+ tokens are one-shot and must be redeemed exactly once.
+            val projection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, mediaProjectionToken)
+            if (projection == null) {
+                _lastError.value = "MediaProjection consent was not granted"
+                null
+            } else {
+                mediaProjection = projection
+                projection.registerCallback(mediaProjectionCallback, null)
+                ProjectionCaptureSource(projection, lxUid)
+            }
         }
-    }
-
-    private fun sourceFactoryFor(kind: SourceKind, intent: Intent): SourceFactory? = when (kind) {
-        SourceKind.MICROPHONE -> SourceFactory {
-            val inputId = intent.getIntExtra(EXTRA_INPUT_DEVICE_ID, -1).takeIf { it >= 0 }
-            MicrophoneSource(this, inputId)
-        }
-        SourceKind.COMPANION_USB -> SourceFactory { CompanionHub.get(this).createSource() }
-        SourceKind.RECEIVER -> SourceFactory { ReceiverHub.get(this).createBridgeSource() }
-        SourceKind.SYSTEM_CAPTURE -> null // needs a MediaProjection token, see ACTION_START
     }
 
     private var currentSource: AudioSource? = null
@@ -510,6 +494,11 @@ class AudioCastService : Service() {
         foregroundType: Int,
         destinations: List<CastDestination>,
     ) {
+        if (destinations.size != 1 || destinations[0].platform != "AirPlay2") {
+            _lastError.value = "LX AirPlay Lite only supports one AirPlay 2 receiver"
+            _state.value = CastState.ERROR
+            return
+        }
         sessionJob?.cancel()
 
         _activeDestinations.value = destinations
@@ -575,7 +564,6 @@ class AudioCastService : Service() {
                 return@launch
             }
 
-            val videoEnabled = sharedPreferences.getBoolean(SettingsActivity.KEY_VIDEO_ENABLED, false)
 
             if (destinations.any { it.platform == "DLNA" || it.platform == "Google Cast" }) {
                 startDlnaHttpServer()
@@ -609,7 +597,7 @@ class AudioCastService : Service() {
                 }
             }
 
-            destinations.forEach { dest -> launchDestination(this, dest, videoEnabled && destinations.size == 1) }
+            destinations.forEach { dest -> launchDestination(this, dest) }
             
             startMetadataRefreshLoop()
             _metadata.value?.let { sendMetadata(it) }
@@ -620,22 +608,11 @@ class AudioCastService : Service() {
     private val destinationJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private fun destKey(d: CastDestination) = "${d.platform}|${d.host}|${d.port}"
 
-    private fun launchDestination(scope: CoroutineScope, dest: CastDestination, withVideo: Boolean) {
+    private fun launchDestination(scope: CoroutineScope, dest: CastDestination) {
+        if (dest.platform != "AirPlay2") return
         destinationJobs[destKey(dest)] = scope.launch {
-            when (dest.platform) {
-                "DLNA" -> startDlnaSession(dest)
-                "Google Cast" -> startGoogleCastSession(dest)
-                "AirPlay" -> startAirPlaySession(dest, airplay2 = false)
-                "AirPlay2" -> startAirPlaySession(dest, airplay2 = true)
-                "Snapcast" -> startSnapcastSession(dest)
-                SendspinHub.PLATFORM -> startSendspinSourceSession()
-                else -> {
-                    launch { startControlSession(dest) }
-                    if (withVideo) launch { startVideoSession(dest) }
-                    launch { startAudioSession(dest) }
-                    launch { startStatsSession(dest) }
-                }
-            }
+            // Only the established audio-only AirPlay 2 session is reachable.
+            startAirPlaySession(dest, airplay2 = true)
         }
     }
 
@@ -644,6 +621,7 @@ class AudioCastService : Service() {
      * screen-capture prompt): room handoff and growing a group on the fly.
      */
     fun addDestination(dest: CastDestination) {
+        if (dest.platform != "AirPlay2") return
         val job = sessionJob ?: return
         if (_activeDestinations.value.any { destKey(it) == destKey(dest) }) return
         val scope = CoroutineScope(Dispatchers.IO + job)
@@ -652,7 +630,7 @@ class AudioCastService : Service() {
         }
         if ((dest.platform == "AirPlay" || dest.platform == "AirPlay2") && dacpServer == null) startDacpServer()
         _activeDestinations.value = _activeDestinations.value + dest
-        launchDestination(scope, dest, withVideo = false)
+        launchDestination(scope, dest)
         PacketLogger.log(PacketDirection.OUT, PacketType.HANDSHAKE, "Added ${dest.name} to the cast")
         _metadata.value?.let { sendMetadata(it) }
         updateNotification()
@@ -1441,73 +1419,6 @@ class AudioCastService : Service() {
         }
     }
 
-    private suspend fun startVideoSession(dest: CastDestination) {
-        var reconnectAttempts = 0
-        while (currentCoroutineContext().isActive) {
-            try {
-                client.webSocket(host = dest.host, port = dest.port, path = "/video") videoSocket@{
-                    setupVideoCodec()
-                    val bufferInfo = MediaCodec.BufferInfo()
-                    while (isActive) {
-                        val outputBufferId = videoCodec?.dequeueOutputBuffer(bufferInfo, 10000L) ?: -1
-                        if (outputBufferId >= 0) {
-                            val outputBuffer = videoCodec?.getOutputBuffer(outputBufferId)
-                            if (outputBuffer != null) {
-                                val outData = ByteArray(bufferInfo.size)
-                                outputBuffer.get(outData)
-                                outgoing.trySendBlocking(Frame.Binary(true, outData))
-                            }
-                            videoCodec?.releaseOutputBuffer(outputBufferId, false)
-                        }
-                    }
-                    releaseVideoCodec()
-                }
-            } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                releaseVideoCodec()
-                reconnectAttempts++
-                delay((RECONNECT_INITIAL_BACKOFF * 2.0.pow(reconnectAttempts.toDouble().coerceAtMost(5.0))).toLong())
-            }
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun setupVideoCodec() {
-        try {
-            val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-            val metrics = DisplayMetrics()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val windowMetrics = windowManager.currentWindowMetrics
-                metrics.densityDpi = windowMetrics.bounds.width()
-            } else {
-                windowManager.defaultDisplay.getRealMetrics(metrics)
-            }
-            
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, VIDEO_WIDTH, VIDEO_HEIGHT)
-            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, VIDEO_BITRATE)
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, VIDEO_FPS)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, VIDEO_IFRAME_INTERVAL)
-
-            videoCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            videoCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            val surface = videoCodec?.createInputSurface()
-            videoCodec?.start()
-
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "AriaCastVideo", VIDEO_WIDTH, VIDEO_HEIGHT, metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null
-            )
-        } catch (e: Exception) {}
-    }
-
-    private fun releaseVideoCodec() {
-        virtualDisplay?.release()
-        virtualDisplay = null
-        try { videoCodec?.stop(); videoCodec?.release() } catch (e: Exception) {}
-        videoCodec = null
-    }
-
     private val _volumePercent = MutableStateFlow(50)
     /** Receiver volume 0-100, shared by every receiver in the session. */
     val volumePercent: StateFlow<Int> = _volumePercent.asStateFlow()
@@ -1896,7 +1807,7 @@ class AudioCastService : Service() {
      * refused, e.g. because the app was in the background.
      */
     private fun enterForeground(type: Int): Boolean {
-        val effectiveType = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && type == FgsTypes.MICROPHONE) 0 else type
+        val effectiveType = type
         return try {
             startForeground(NOTIFICATION_ID, createNotification(), effectiveType)
             true
@@ -1943,7 +1854,6 @@ class AudioCastService : Service() {
         } catch (e: Exception) {}
         mediaProjection = null
 
-        releaseVideoCodec()
         
         dlnaHttpServerJob?.cancel()
         dlnaHttpServerJob = null
