@@ -321,7 +321,7 @@ class AudioCastService : Service() {
         }
         
         startMetadataWorker()
-        startArtworkServer()
+        // Lite: no background HTTP artwork service.
     }
 
     private fun startMetadataWorker() {
@@ -414,27 +414,14 @@ class AudioCastService : Service() {
                 }
 
                 val destinations = parseDestinations(intent)
-                if (mediaProjectionToken != null && destinations.isNotEmpty()) {
+                if (mediaProjectionToken != null && destinations.size == 1 && destinations[0].platform == "AirPlay2") {
                     startCasting(projectionSourceFactory(mediaProjectionToken), FgsTypes.MEDIA_PROJECTION, destinations)
                 }
                 return START_STICKY
             }
             ACTION_START_SOURCE -> {
-                // Sources that need no screen-capture consent: microphone / line-in,
-                // the AriaCompanion USB loopback, and audio this device is receiving.
-                cleanupSession()
-                val kind = SourceKind.fromId(intent.getStringExtra(EXTRA_SOURCE))
-                val factory = kind?.let { sourceFactoryFor(it, intent) }
-                val destinations = parseDestinations(intent)
-                if (factory != null && destinations.isNotEmpty()) {
-                    val fgsType = when (kind) {
-                        SourceKind.MICROPHONE -> FgsTypes.MICROPHONE
-                        SourceKind.COMPANION_USB -> FgsTypes.CONNECTED_DEVICE
-                        else -> FgsTypes.MEDIA_PLAYBACK
-                    }
-                    startCasting(factory, fgsType, destinations)
-                }
-                return START_STICKY
+                // Lite: non-playback sources (microphone, USB and relay) are disabled.
+                return START_NOT_STICKY
             }
             ACTION_STOP -> {
                 stopCasting()
@@ -471,7 +458,7 @@ class AudioCastService : Service() {
                 destinations.add(CastDestination(name, host, 0, platform, extra = extra))
             }
         }
-        return destinations
+        return destinations.filter { it.platform == "AirPlay2" }.take(1)
     }
 
     /** Builds the [AudioSource] for a start request; runs after the service is in the foreground. */
@@ -480,26 +467,26 @@ class AudioCastService : Service() {
     }
 
     private fun projectionSourceFactory(mediaProjectionToken: Intent) = SourceFactory {
-        // MediaProjection token is single-use on Android 14+; obtain it exactly once.
-        val projection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, mediaProjectionToken)
-        if (projection == null) {
-            PacketLogger.log(PacketDirection.IN, PacketType.HANDSHAKE, "MediaProjection permission was not granted")
+        // Fail closed: never capture arbitrary apps when LX Music is not installed.
+        val lxUid = runCatching {
+            @Suppress("DEPRECATION")
+            packageManager.getApplicationInfo("cn.toside.music.mobile", 0).uid
+        }.getOrNull()
+        if (lxUid == null) {
+            _lastError.value = "LX Music (cn.toside.music.mobile) is not installed or visible"
             null
         } else {
-            mediaProjection = projection
-            projection.registerCallback(mediaProjectionCallback, null)
-            ProjectionCaptureSource(projection, sharedPreferences.getBoolean(KEY_CAPTURE_GAMES, true))
+            // Android 14+ tokens are one-shot and must be redeemed exactly once.
+            val projection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, mediaProjectionToken)
+            if (projection == null) {
+                _lastError.value = "MediaProjection consent was not granted"
+                null
+            } else {
+                mediaProjection = projection
+                projection.registerCallback(mediaProjectionCallback, null)
+                ProjectionCaptureSource(projection, lxUid)
+            }
         }
-    }
-
-    private fun sourceFactoryFor(kind: SourceKind, intent: Intent): SourceFactory? = when (kind) {
-        SourceKind.MICROPHONE -> SourceFactory {
-            val inputId = intent.getIntExtra(EXTRA_INPUT_DEVICE_ID, -1).takeIf { it >= 0 }
-            MicrophoneSource(this, inputId)
-        }
-        SourceKind.COMPANION_USB -> SourceFactory { CompanionHub.get(this).createSource() }
-        SourceKind.RECEIVER -> SourceFactory { ReceiverHub.get(this).createBridgeSource() }
-        SourceKind.SYSTEM_CAPTURE -> null // needs a MediaProjection token, see ACTION_START
     }
 
     private var currentSource: AudioSource? = null
@@ -510,6 +497,11 @@ class AudioCastService : Service() {
         foregroundType: Int,
         destinations: List<CastDestination>,
     ) {
+        if (destinations.size != 1 || destinations[0].platform != "AirPlay2") {
+            _lastError.value = "LX AirPlay Lite only supports one AirPlay 2 receiver"
+            _state.value = CastState.ERROR
+            return
+        }
         sessionJob?.cancel()
 
         _activeDestinations.value = destinations
@@ -575,7 +567,7 @@ class AudioCastService : Service() {
                 return@launch
             }
 
-            val videoEnabled = sharedPreferences.getBoolean(SettingsActivity.KEY_VIDEO_ENABLED, false)
+            val videoEnabled = false // No video capture in the Lite build.
 
             if (destinations.any { it.platform == "DLNA" || it.platform == "Google Cast" }) {
                 startDlnaHttpServer()
@@ -621,21 +613,10 @@ class AudioCastService : Service() {
     private fun destKey(d: CastDestination) = "${d.platform}|${d.host}|${d.port}"
 
     private fun launchDestination(scope: CoroutineScope, dest: CastDestination, withVideo: Boolean) {
+        if (dest.platform != "AirPlay2") return
         destinationJobs[destKey(dest)] = scope.launch {
-            when (dest.platform) {
-                "DLNA" -> startDlnaSession(dest)
-                "Google Cast" -> startGoogleCastSession(dest)
-                "AirPlay" -> startAirPlaySession(dest, airplay2 = false)
-                "AirPlay2" -> startAirPlaySession(dest, airplay2 = true)
-                "Snapcast" -> startSnapcastSession(dest)
-                SendspinHub.PLATFORM -> startSendspinSourceSession()
-                else -> {
-                    launch { startControlSession(dest) }
-                    if (withVideo) launch { startVideoSession(dest) }
-                    launch { startAudioSession(dest) }
-                    launch { startStatsSession(dest) }
-                }
-            }
+            // Only the established audio-only AirPlay 2 session is reachable.
+            startAirPlaySession(dest, airplay2 = true)
         }
     }
 
@@ -644,6 +625,7 @@ class AudioCastService : Service() {
      * screen-capture prompt): room handoff and growing a group on the fly.
      */
     fun addDestination(dest: CastDestination) {
+        if (dest.platform != "AirPlay2") return
         val job = sessionJob ?: return
         if (_activeDestinations.value.any { destKey(it) == destKey(dest) }) return
         val scope = CoroutineScope(Dispatchers.IO + job)
