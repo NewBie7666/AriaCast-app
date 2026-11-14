@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aria.ariacast.AudioCastService
 import com.aria.ariacast.CastState
+import com.aria.ariacast.DiscoveryState
 import com.aria.ariacast.pipeline.SourceKind
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 @Composable
 fun LxAirPlayLiteApp(controller: AppController) {
     val servers by controller.servers.collectAsState()
+    val discoveryState by controller.discoveryState.collectAsState()
     val service by controller.service.collectAsState()
     val fallbackState = remember { MutableStateFlow(CastState.OFF) }
     val fallbackError = remember { MutableStateFlow<String?>(null) }
@@ -78,7 +80,7 @@ fun LxAirPlayLiteApp(controller: AppController) {
                     OutlinedButton(onClick = controller::refreshDiscovery) { Text("刷新") }
                 }
                 if (targets.isEmpty()) {
-                    Text("未发现 AirPlay 2 接收设备，请确认 Home 350 已联网。")
+                    Text(if (discoveryState == DiscoveryState.SCANNING) "正在搜索局域网中的 AirPlay 2 音箱…" else "未发现 AirPlay 2 接收设备。请确认 Home 350 已联网且手机位于同一局域网。")
                 }
                 targets.forEach { target ->
                     val key = "${target.host}:${target.port}"
@@ -103,6 +105,7 @@ fun LxAirPlayLiteApp(controller: AppController) {
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("开始 AirPlay 2 投放") }
                 }
+                Text("v0.1.1 · AirPlay 2 自动发现", style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "隐私：应用只允许捕获洛雪音乐的媒体音频。Android 仍会要求麦克风权限及投屏授权；本版本不使用物理麦克风。",
