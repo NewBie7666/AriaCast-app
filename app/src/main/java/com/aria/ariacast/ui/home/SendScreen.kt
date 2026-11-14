@@ -96,7 +96,6 @@ import com.aria.ariacast.TrackMetadata
 import com.aria.ariacast.companion.CompanionHub
 import com.aria.ariacast.companion.CompanionStatus
 import com.aria.ariacast.musicassistant.MusicAssistantPanel
-import com.aria.ariacast.pipeline.MicrophoneSource
 import com.aria.ariacast.pipeline.SourceKind
 import com.aria.ariacast.receiver.ReceiverHub
 import com.aria.ariacast.ui.AppController
@@ -198,16 +197,12 @@ private fun SourcePicker(controller: AppController, selection: SourceSelection) 
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             SourceChip(stringResource(R.string.source_apps), Icons.Filled.MusicNote, selection.source == SourceKind.SYSTEM_CAPTURE) { choose(SourceKind.SYSTEM_CAPTURE) }
-            SourceChip(stringResource(R.string.source_microphone), Icons.Outlined.Mic, selection.source == SourceKind.MICROPHONE) { choose(SourceKind.MICROPHONE) }
             if (companionStatus is CompanionStatus.Connected) {
                 SourceChip(stringResource(R.string.companion), Icons.Filled.Usb, selection.source == SourceKind.COMPANION_USB) { choose(SourceKind.COMPANION_USB) }
             }
             if (receiving) {
                 SourceChip(stringResource(R.string.source_received), Icons.Filled.Speaker, selection.source == SourceKind.RECEIVER) { choose(SourceKind.RECEIVER) }
             }
-        }
-        AnimatedVisibility(selection.source == SourceKind.MICROPHONE, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-            InputPicker(prefs, selection)
         }
     }
 }
@@ -218,23 +213,6 @@ private fun SourceChip(label: String, icon: ImageVector, selected: Boolean, onCl
         selected = selected, onClick = onClick, label = { Text(label) },
         leadingIcon = { Icon(icon, null, Modifier.size(FilterChipDefaults.IconSize)) },
     )
-}
-
-@Composable
-private fun InputPicker(prefs: android.content.SharedPreferences, selection: SourceSelection) {
-    val context = LocalContext.current
-    val inputs = remember { MicrophoneSource.availableInputs(context) }
-    val selected = selection.inputDeviceId ?: -1
-    ListGroup(Modifier.padding(top = 8.dp)) {
-        inputs.forEach { d ->
-            val choose = { selection.inputDeviceId = d.id; prefs.edit().putInt(KEY_INPUT, d.id).apply() }
-            ListRow(
-                headline = d.productName?.toString()?.ifBlank { null } ?: stringResource(R.string.source_builtin_mic),
-                leading = { RadioButton(selected = selected == d.id, onClick = null) },
-                onClick = choose,
-            )
-        }
-    }
 }
 
 // ------------------------------------------------------------------ speakers
