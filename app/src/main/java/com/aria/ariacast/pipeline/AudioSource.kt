@@ -44,7 +44,6 @@ interface AudioSource {
 
 enum class SourceKind(val id: String) {
     SYSTEM_CAPTURE("capture"),
-    MICROPHONE("microphone"),
     COMPANION_USB("companion"),
     RECEIVER("receiver");
 
@@ -68,6 +67,5 @@ object PcmFormat {
 object FgsTypes {
     const val MEDIA_PROJECTION = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
     const val CONNECTED_DEVICE = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-    const val MICROPHONE = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
     const val MEDIA_PLAYBACK = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
 }
