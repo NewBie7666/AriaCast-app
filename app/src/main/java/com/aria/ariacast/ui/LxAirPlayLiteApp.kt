@@ -1,5 +1,7 @@
 package com.aria.ariacast.ui
 
+import android.content.Context
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -27,11 +30,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.aria.ariacast.AudioCastService
 import com.aria.ariacast.CastState
 import com.aria.ariacast.DiscoveryState
+import com.aria.ariacast.MainActivity
 import com.aria.ariacast.pipeline.SourceKind
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -41,6 +46,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 @Composable
 fun LxAirPlayLiteApp(controller: AppController) {
+    val context = LocalContext.current
+    val prefs = remember(context) { context.getSharedPreferences(AudioCastService.PREFS_NAME, Context.MODE_PRIVATE) }
+    var fastProjection by rememberSaveable { mutableStateOf(prefs.getBoolean(MainActivity.KEY_LITE_FAST_PROJECTION, false)) }
     val servers by controller.servers.collectAsState()
     val discoveryState by controller.discoveryState.collectAsState()
     val service by controller.service.collectAsState()
@@ -92,6 +100,27 @@ fun LxAirPlayLiteApp(controller: AppController) {
                     }
                 }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("快捷投放：不再选择应用", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "开启并记住设置后，Android 14+ 会改为直接请求默认屏幕的共享授权。" +
+                                "每次开始仍需点击系统确认。授权范围比单应用模式更广，" +
+                                "但本应用只捕获洛雪音乐的音频，不采集画面。",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = fastProjection,
+                        onCheckedChange = { enabled ->
+                            prefs.edit().putBoolean(MainActivity.KEY_LITE_FAST_PROJECTION, enabled).apply()
+                            fastProjection = enabled
+                        },
+                    )
+                }
                 if (state == CastState.CASTING || state == CastState.CONNECTING) {
                     Button(onClick = controller::stopCasting, modifier = Modifier.fillMaxWidth()) {
                         Text("停止投放")
@@ -105,7 +134,7 @@ fun LxAirPlayLiteApp(controller: AppController) {
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("开始 AirPlay 2 投放") }
                 }
-                Text("v0.1.1 · AirPlay 2 自动发现", style = MaterialTheme.typography.bodySmall)
+                Text("v0.1.2 · 可选快捷投放", style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "隐私：应用只允许捕获洛雪音乐的媒体音频。Android 仍会要求麦克风权限及投屏授权；本版本不使用物理麦克风。",
