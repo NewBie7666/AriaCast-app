@@ -146,7 +146,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
     private fun neededPermissions(source: SourceKind): List<String> = buildList {
         // Playback capture and the microphone both need RECORD_AUDIO; USB loopback and
         // forwarding received audio don't.
-        if ((source == SourceKind.SYSTEM_CAPTURE || source == SourceKind.MICROPHONE) && !hasPermission(Manifest.permission.RECORD_AUDIO)) {
+        if ((source == SourceKind.SYSTEM_CAPTURE) && !hasPermission(Manifest.permission.RECORD_AUDIO)) {
             add(Manifest.permission.RECORD_AUDIO)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
