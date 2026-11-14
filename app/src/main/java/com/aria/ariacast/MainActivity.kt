@@ -11,6 +11,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -123,7 +124,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         pendingSource = null
         when {
             recordAudio && source != null -> startSourceCast(source.first, source.second)
-            recordAudio -> startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+            recordAudio -> launchProjectionConsent()
             !shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> openAppSettingsForPermission()
             else -> Toast.makeText(this, getString(R.string.record_audio_permission_required), Toast.LENGTH_LONG).show()
         }
@@ -134,6 +135,23 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
         val saved = WifiJoinManager.interpretResult(result.resultCode, result.data)
         wifiAddNetworkContinuation?.let { if (it.isActive) it.resume(saved) }
         wifiAddNetworkContinuation = null
+    }
+
+    /**
+     * Android 14+ optional fast path: skips the per-app picker, NOT OS consent.
+     * This requests full-display projection scope. The Lite service does not
+     * create a virtual display, and its AudioPlaybackCapture stays locked
+     * to the installed LX Music UID. Users must explicitly opt in from the UI.
+     */
+    private fun launchProjectionConsent() {
+        val useDefaultDisplay = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+            prefs.getBoolean(KEY_LITE_FAST_PROJECTION, false)
+        val request = if (useDefaultDisplay) {
+            mediaProjectionManager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            mediaProjectionManager.createScreenCaptureIntent()
+        }
+        startMediaProjection.launch(request)
     }
 
     private fun hasPermission(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
@@ -165,7 +183,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
             requestCastPermissions.launch(missing.toTypedArray())
             return
         }
-        if (effective == SourceKind.SYSTEM_CAPTURE) startMediaProjection.launch(mediaProjectionManager.createScreenCaptureIntent())
+        if (effective == SourceKind.SYSTEM_CAPTURE) launchProjectionConsent()
         else startSourceCast(effective, inputDeviceId)
     }
 
@@ -391,6 +409,7 @@ class MainActivity : ComponentActivity(), AppController, PluginHost {
 
     companion object {
         const val KEY_ONBOARDED = "onboarding_done_v2"
+        const val KEY_LITE_FAST_PROJECTION = "lite_skip_application_picker"
         const val EXTRA_SCREEN = "com.aria.ariacast.EXTRA_SCREEN"
         const val KEY_GROUPS = "saved_groups"
 
