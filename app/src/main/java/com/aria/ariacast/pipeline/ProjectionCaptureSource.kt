@@ -23,7 +23,7 @@ import kotlinx.coroutines.isActive
  */
 class ProjectionCaptureSource(
     private val projection: MediaProjection,
-    private val includeGames: Boolean,
+    private val lxMusicUid: Int,
 ) : AudioSource {
 
     override val kind = SourceKind.SYSTEM_CAPTURE
@@ -35,9 +35,9 @@ class ProjectionCaptureSource(
     @SuppressLint("MissingPermission") // RECORD_AUDIO is requested by MainActivity before casting
     override suspend fun open(): String? {
         val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+            .addMatchingUid(lxMusicUid)
             .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
             .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-            .apply { if (includeGames) addMatchingUsage(AudioAttributes.USAGE_GAME) }
             .build()
 
         val minBuf = AudioRecord.getMinBufferSize(
@@ -77,7 +77,7 @@ class ProjectionCaptureSource(
     override suspend fun run(emit: suspend (ByteArray) -> Unit) {
         val r = recorder ?: return
         r.startRecording()
-        PacketLogger.log(PacketDirection.IN, PacketType.AUDIO, "Playback capture started (games: $includeGames)")
+        PacketLogger.log(PacketDirection.IN, PacketType.AUDIO, "Playback capture started (LX Music UID: $lxMusicUid)")
         while (currentCoroutineContext().isActive) {
             val frame = ByteArray(PcmFormat.FRAME_BYTES)
             val read = r.read(frame, 0, frame.size)
